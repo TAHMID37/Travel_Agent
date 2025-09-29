@@ -1,11 +1,13 @@
 import os
 import json
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool, set_tracing_disabled,Runner
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool, set_tracing_disabled
 
 # Load environment variables
 load_dotenv()
@@ -19,11 +21,13 @@ if not BASE_URL or not API_KEY or not MODEL_NAME:
         "Please set BASE_URL, API_KEY, and MODEL_NAME."
     )
     
-
 client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
 set_tracing_disabled(disabled=True)
+
+# --- Pydantic Models for API ---
+class TravelQueryRequest(BaseModel):
+    query: str = Field(..., description="The travel-related question or request")
     
-# --- Models for structured outputs ---
 class FlightRecommendation(BaseModel):
     airline: str
     departure_time: str
@@ -45,13 +49,17 @@ class TravelPlan(BaseModel):
     budget: float
     activities: List[str] = Field(description="List of recommended activities")
     notes: str = Field(description="Additional notes or recommendations")
-    
-# --- Tools ---
 
+class TravelResponse(BaseModel):
+    success: bool
+    response_type: str  # "flight", "hotel", "travel_plan", or "general"
+    data: Union[FlightRecommendation, HotelRecommendation, TravelPlan, str]
+    message: Optional[str] = None
+
+# --- Tools ---
 @function_tool
 def get_weather_forecast(city: str, date: str) -> str:
     """Get the weather forecast for a city on a specific date."""
-    # In a real implementation, this would call a weather API
     weather_data = {
         "New York": {"sunny": 0.3, "rainy": 0.4, "cloudy": 0.3},
         "Los Angeles": {"sunny": 0.8, "rainy": 0.1, "cloudy": 0.1},
@@ -64,7 +72,6 @@ def get_weather_forecast(city: str, date: str) -> str:
     
     if city in weather_data:
         conditions = weather_data[city]
-        # Simple simulation based on probabilities
         highest_prob = max(conditions, key=conditions.get)
         temp_range = {
             "New York": "15-25°C",
@@ -79,11 +86,9 @@ def get_weather_forecast(city: str, date: str) -> str:
     else:
         return f"Weather forecast for {city} is not available."
 
-
 @function_tool
 def search_flights(origin: str, destination: str, date: str) -> str:
     """Search for flights between two cities on a specific date."""
-    # In a real implementation, this would call a flight search API
     flight_options = [
         {
             "airline": "SkyWays",
@@ -113,7 +118,6 @@ def search_flights(origin: str, destination: str, date: str) -> str:
 @function_tool
 def search_hotels(city: str, check_in: str, check_out: str, max_price: Optional[float] = None) -> str:
     """Search for hotels in a city for specific dates within a price range."""
-    # In a real implementation, this would call a hotel search API
     hotel_options = [
         {
             "name": "City Center Hotel",
@@ -135,17 +139,14 @@ def search_hotels(city: str, check_in: str, check_out: str, max_price: Optional[
         }
     ]
     
-    # Filter by max price if provided
     if max_price is not None:
         filtered_hotels = [hotel for hotel in hotel_options if hotel["price_per_night"] <= max_price]
     else:
         filtered_hotels = hotel_options
         
     return json.dumps(filtered_hotels)
-    
 
-# --- Main Travel Agent ---
-
+# --- Agents ---
 flight_agent = Agent(
     name="Flight Specialist",
     handoff_description="Specialist agent for finding and recommending flights",
@@ -209,63 +210,122 @@ travel_agent = Agent(
     output_type=TravelPlan
 )
 
-# user -> question ->travel (flight , hotel)
+# --- FastAPI Application ---
+app = FastAPI(
+    title="Travel Agent API",
+    description="A comprehensive travel planning API with specialized agents for flights, hotels, and general travel planning",
+    version="1.0.0"
+)
 
-# --- Main Function ---
+# # Add CORS middleware
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],  # In production, specify actual origins
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
-async def main():
-    # Example queries to test different aspects of the system
-    queries = [
-       # "I need a flight from New York to Chicago tomorrow",
-         "Find me a hotel in Paris with a pool for under $300 per night"
-    ]
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Travel Agent API",
+        "version": "1.0.0",
+        "endpoints": {
+            "/": "API information",
+            "/query": "POST - Submit travel queries",
+            "/health": "GET - Health check"
+        }
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "message": "Travel Agent API is running"}
+
+@app.post("/query", response_model=TravelResponse)
+async def process_travel_query(request: TravelQueryRequest):
+    """
+    Process travel-related queries using the multi-agent system.
     
-    for query in queries:
-        print("\n" + "="*50)
-        print(f"QUERY: {query}")
+    The system can handle:
+    - Flight searches and recommendations
+    - Hotel searches and recommendations  
+    - General travel planning and itineraries
+    - Weather information requests
+    """
+    try:
+        # Run the travel agent with the user's query
+        result = await Runner.run(travel_agent, request.query)
         
-        result = await Runner.run(travel_agent, query)
+        # Determine response type and format data
+        final_output = result.final_output
         
-        print("\nFINAL RESPONSE:")
-        
-        # Format the output based on the type of response
-        if hasattr(result.final_output, "airline"):  # Flight recommendation
-            flight = result.final_output
-            print("\n✈️ FLIGHT RECOMMENDATION ✈️")
-            print(f"Airline: {flight.airline}")
-            print(f"Departure: {flight.departure_time}")
-            print(f"Arrival: {flight.arrival_time}")
-            print(f"Price: ${flight.price}")
-            print(f"Direct Flight: {'Yes' if flight.direct_flight else 'No'}")
-            print(f"\nWhy this flight: {flight.recommendation_reason}")
+        if hasattr(final_output, "airline"):  # Flight recommendation
+            return TravelResponse(
+                success=True,
+                response_type="flight",
+                data=final_output,
+                message="Flight recommendation generated successfully"
+            )
             
-        elif hasattr(result.final_output, "name") and hasattr(result.final_output, "amenities"):  # Hotel recommendation
-            hotel = result.final_output
-            print("\n🏨 HOTEL RECOMMENDATION 🏨")
-            print(f"Name: {hotel.name}")
-            print(f"Location: {hotel.location}")
-            print(f"Price per night: ${hotel.price_per_night}")
+        elif hasattr(final_output, "name") and hasattr(final_output, "amenities"):  # Hotel recommendation
+            return TravelResponse(
+                success=True,
+                response_type="hotel",
+                data=final_output,
+                message="Hotel recommendation generated successfully"
+            )
             
-            print("\nAmenities:")
-            for i, amenity in enumerate(hotel.amenities, 1):
-                print(f"  {i}. {amenity}")
-                
-            print(f"\nWhy this hotel: {hotel.recommendation_reason}")
+        elif hasattr(final_output, "destination"):  # Travel plan
+            return TravelResponse(
+                success=True,
+                response_type="travel_plan",
+                data=final_output,
+                message="Travel plan generated successfully"
+            )
             
-        elif hasattr(result.final_output, "destination"):  # Travel plan
-            travel_plan = result.final_output
-            print(f"\n🌍 TRAVEL PLAN FOR {travel_plan.destination.upper()} 🌍")
-            print(f"Duration: {travel_plan.duration_days} days")
-            print(f"Budget: ${travel_plan.budget}")
-            
-            print("\n🎯 RECOMMENDED ACTIVITIES:")
-            for i, activity in enumerate(travel_plan.activities, 1):
-                print(f"  {i}. {activity}")
-            
-            print(f"\n📝 NOTES: {travel_plan.notes}")
-        
         else:  # Generic response
-            print(result.final_output)
+            return TravelResponse(
+                success=True,
+                response_type="general",
+                data=str(final_output),
+                message="Response generated successfully"
+            )
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing travel query: {str(e)}"
+        )
+
+@app.get("/agents")
+async def list_agents():
+    """List available agents and their capabilities"""
+    return {
+        "agents": [
+            {
+                "name": "Travel Planner",
+                "description": "Main travel planning agent",
+                "capabilities": ["weather information", "travel itineraries", "agent handoffs"],
+                "tools": ["get_weather_forecast"]
+            },
+            {
+                "name": "Flight Specialist", 
+                "description": "Specialist for flight searches and recommendations",
+                "capabilities": ["flight search", "flight recommendations"],
+                "tools": ["search_flights"]
+            },
+            {
+                "name": "Hotel Specialist",
+                "description": "Specialist for hotel searches and recommendations", 
+                "capabilities": ["hotel search", "hotel recommendations"],
+                "tools": ["search_hotels"]
+            }
+        ]
+    }
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -34,6 +34,17 @@ class TravelPlan(BaseModel):
 # --- Tools ---
 
 @function_tool
+def get_predicted_travel_cost(city: str , activity: list[str]):
+    """Get the predicted travel cost for a city and activity."""
+    # In a real implementation, this would call a travel cost API
+    travel_cost = {
+        "New York": 1000,
+        "Los Angeles": 1500,
+        "Chicago": 1200,
+    }
+    return f"The predicted travel cost for {city} and {activity} is {travel_cost.get(city, 1000)}."
+
+@function_tool
 def get_weather_forecast(city: str, date: str) -> str:
     """Get the weather forecast for a city on a specific date."""
     # In a real implementation, this would call a weather API
@@ -76,6 +87,10 @@ travel_agent = Agent(
     
     Always be helpful, informative, and enthusiastic about travel. Provide specific recommendations
     based on the user's interests and preferences.
+    You can 2 tools to help you with your task:
+    
+    1. get_weather_forecast to get the weather forecast for a city
+    2. get_predicted_travel_cost to get the predicted travel cost for a city and activity
     
     When creating travel plans, consider:
     - The weather at the destination
@@ -85,7 +100,7 @@ travel_agent = Agent(
     """,
     model=OpenAIChatCompletionsModel(model=MODEL_NAME, openai_client=client),
     output_type=TravelPlan,
-    tools=[get_weather_forecast]
+    tools=[get_weather_forecast, get_predicted_travel_cost]
 )
 
 
@@ -95,8 +110,8 @@ travel_agent = Agent(
 async def main():
     # Example queries to test the system
     queries = [
-        "I'm planning a trip to Miami for 5 days with a budget of $2000. What should I do there and what is the weather going to look like?",
-        # "I want to visit London for a week with a budget of $3000. What activities do you recommend based on the weather?"
+        # "I'm planning a trip to Miami for 5 days with a budget of $2000. What should I do there and what is the weather going to look like?",
+         "I want to visit New York for a week with a budget of $100. What activities do you recommend based on the weather?"
     ]
     
     for query in queries:

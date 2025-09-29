@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool, set_tracing_disabled,Runner
 
+# https://claude.ai/public/artifacts/21ada6a7-d6f8-4160-b3e1-8d33088a5f93
+
 # Load environment variables
 load_dotenv()
 
@@ -21,13 +23,13 @@ set_tracing_disabled(disabled=True)
     
 
 agent = Agent(
-    name="Assistant", 
-    instructions="You are a helpful assistant",
-    model=OpenAIChatCompletionsModel(model=MODEL_NAME, openai_client=client),
+    name="Assistant",  
+    instructions="You are a helpful assistant", # Prompt -> Task 
+    model=OpenAIChatCompletionsModel(model=MODEL_NAME, openai_client=client)
 )
 
 def main():
-    result = Runner.run_sync(agent, "Write a haiku about recursion in programming.")
+    result = Runner.run_sync(agent, "Write a joke about recursion in programming.")
     print(result.final_output)
 
 if __name__ == "__main__":
